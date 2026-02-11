@@ -156,7 +156,7 @@ def _build_mhit(track, mhod_bytes_list):
 
     ts = _mac_timestamp()
 
-    filetype_code = 0x000D  # MP3 = 0x000D, AAC/M4A = 0x0002
+    filetype_code = 0x000D  # MP3 = 0x000D, AAC/M4A = 0x0002, WAV = 0x0004, AIFF = 0x0001
     ext = track.filetype.lower()
     if ext in (".m4a", ".aac", ".mp4"):
         filetype_code = 0x0002

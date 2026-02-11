@@ -233,8 +233,8 @@ class TestParseArgs(unittest.TestCase):
 
 
 class TestGetAudioMetadata(unittest.TestCase):
-    def test_nonexistent_format_returns_defaults(self):
-        """Metadata for a dummy file should return safe defaults."""
+    def test_invalid_audio_data_returns_defaults(self):
+        """Metadata for a file with invalid audio data should return safe defaults."""
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             f.write(b"\x00" * 1024)
             path = f.name

@@ -141,7 +141,7 @@ def _sanitise_filename(name):
 
 def hash_slot(filepath):
     """Deterministic slot number from file content hash (0-49)."""
-    h = hashlib.md5(filepath.encode("utf-8")).hexdigest()  # nosec - not used for security
+    h = hashlib.sha256(filepath.encode("utf-8")).hexdigest()
     return int(h[:8], 16) % 50
 
 
@@ -173,6 +173,7 @@ def sftp_makedirs(sftp, remote_dir):
     """Recursively create directories on the remote host."""
     dirs_to_create = []
     current = remote_dir
+    # iPod uses Unix-style paths; "/" is always the root
     while current and current != "/":
         if sftp_exists(sftp, current):
             break
