@@ -152,7 +152,11 @@ def hash_slot(filepath):
 def connect_ssh(host, port, user, password):
     """Open an SSH connection to the iPod and return (SSHClient, SFTPClient)."""
     ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # Load system host keys if available so already-trusted hosts are verified.
+    ssh.load_system_host_keys()
+    # For jailbroken iPods on local networks the host key is typically not
+    # pre-known.  WarningPolicy logs a warning instead of silently accepting.
+    ssh.set_missing_host_key_policy(paramiko.WarningPolicy())
     logger.info("Connecting to %s:%d as %s …", host, port, user)
     ssh.connect(host, port=port, username=user, password=password,
                 look_for_keys=False, allow_agent=False)
