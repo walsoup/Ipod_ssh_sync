@@ -31,6 +31,7 @@ from mutagen.easyid3 import EasyID3
 from mutagen import File as MutagenFile
 
 from itunesdb import ITunesDB, Track
+from itunes_sqlite import IOSDatabase, generate_hashed_filename
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,8 @@ def ipod_dest_path(filename, slot):
     """
     folder = "F{:02d}".format(slot % 50)
     # iPod expects filenames to start with a 4-char code
-    safe_name = _sanitise_filename(filename)
+    # We generate a deterministic hashed 4-char name regardless of device type
+    safe_name = generate_hashed_filename(filename)
     return "{}/{}/{}".format(IPOD_MUSIC_DIR, folder, safe_name)
 
 
@@ -248,8 +250,95 @@ def sync_music(host, port, user, password, music_dir):
         ssh.close()
 
 
+def detect_ios_device(sftp):
+    """Check for MediaLibrary.sqlitedb on the device."""
+    return sftp_exists(sftp, IPOD_DB_DIR + "/MediaLibrary.sqlitedb")
+
 def _do_sync(ssh, sftp, local_files):
-    """Upload new files and rebuild the iTunesDB."""
+    """Main sync logic dispatcher."""
+    if detect_ios_device(sftp):
+        logger.info("iOS device detected (MediaLibrary.sqlitedb found). Using SQLite mode.")
+        _do_sync_ios(ssh, sftp, local_files)
+    else:
+        logger.info("Classic iPod detected (iTunesDB). Using binary mode.")
+        _do_sync_classic(ssh, sftp, local_files)
+
+def _do_sync_ios(ssh, sftp, local_files):
+    """Upload new files and update MediaLibrary.sqlitedb (iOS)."""
+    db = IOSDatabase()
+
+    new_files = []
+    # For now, just upload all files. Deduplication logic is complex with random/hashed names without reading DB.
+    # But since we use hashed names based on filename, existing_names check in existing_ipod_files might partially work if names match.
+    # However, existing_ipod_files returns whatever is in Fxx.
+    # If we use deterministic hash, we can check.
+
+    existing_names = existing_ipod_files(sftp)
+    for fpath in local_files:
+        fname = os.path.basename(fpath)
+        # Check if hash-named file exists
+        safe_name = generate_hashed_filename(fname)
+        if safe_name in existing_names:
+            logger.debug("Skipping (already on iPod): %s as %s", fname, safe_name)
+        else:
+            new_files.append(fpath)
+
+    if not new_files:
+        logger.info("No files to upload")
+        return
+
+    logger.info("%d file(s) to upload", len(new_files))
+
+    count = 0
+    for fpath in new_files:
+        fname = os.path.basename(fpath)
+        slot = hash_slot(fname)
+        remote_path = ipod_dest_path(fname, slot)
+        remote_dir = os.path.dirname(remote_path)
+
+        sftp_makedirs(sftp, remote_dir)
+        logger.info("Uploading %s -> %s", fname, remote_path)
+        sftp.put(fpath, remote_path)
+
+        meta = get_audio_metadata(fpath)
+        # Build the iPod-relative path (colon-separated)
+        relative = remote_path.replace(IPOD_MUSIC_ROOT + "/", "")
+        ipod_path = ":" + relative.replace("/", ":")
+        meta['ipod_path'] = ipod_path
+
+        db.add_track(meta)
+        count += 1
+        logger.info("  -> Added metadata for %s", meta['title'])
+
+    if count > 0:
+        sql = db.generate_sql()
+
+        tmp_sql = tempfile.NamedTemporaryFile(delete=False, suffix=".sql", mode="w")
+        tmp_sql.write(sql)
+        tmp_sql.close()
+
+        remote_sql_path = IPOD_DB_DIR + "/update.sql"
+        logger.info("Uploading SQL update script to %s", remote_sql_path)
+        sftp.put(tmp_sql.name, remote_sql_path)
+        os.unlink(tmp_sql.name)
+
+        db_path = IPOD_DB_DIR + "/MediaLibrary.sqlitedb"
+        cmd = "sqlite3 {} < {}".format(db_path, remote_sql_path)
+        logger.info("Executing SQL on device: %s", cmd)
+        out = remote_exec(ssh, cmd)
+        logger.info("SQLite output: %s", out)
+
+        sftp.remove(remote_sql_path)
+
+        logger.info("Refreshing iPod caches ...")
+        remote_exec(ssh, "sync")
+
+        logger.info("Done - %d track(s) added!", count)
+    else:
+        logger.info("No new tracks added to DB.")
+
+def _do_sync_classic(ssh, sftp, local_files):
+    """Upload new files and rebuild the iTunesDB (Classic)."""
     # 1. Pull the current iTunesDB ------------------------------------------
     db_exists = sftp_exists(sftp, IPOD_DB_PATH)
     if db_exists:
@@ -268,7 +357,11 @@ def _do_sync(ssh, sftp, local_files):
     new_files = []
     for fpath in local_files:
         fname = os.path.basename(fpath)
-        safe = _sanitise_filename(fname)
+        # Note: ipod_dest_path uses generate_hashed_filename now.
+        # But _sanitise_filename was used here before.
+        # If we want to support deduplication with hashed names, we should check against hashed names.
+
+        safe = generate_hashed_filename(fname)
         if safe in existing_names:
             logger.debug("Skipping (already on iPod): %s", fname)
         else:
